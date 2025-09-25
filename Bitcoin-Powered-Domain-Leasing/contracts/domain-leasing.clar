@@ -286,3 +286,86 @@
         (map-delete active-leases domain-name)
         (ok true))
       (ok false))))
+
+(define-public (favorite-domain (domain-name (string-ascii 64)))
+  (let ((caller tx-sender))
+    (asserts! (is-some (map-get? domain-registry domain-name)) err-not-found)
+    (map-set domain-favorites { user: caller, domain: domain-name } true)
+    (ok true)))
+
+(define-public (unfavorite-domain (domain-name (string-ascii 64)))
+  (let ((caller tx-sender))
+    (map-delete domain-favorites { user: caller, domain: domain-name })
+    (ok true)))
+
+(define-read-only (get-domain-info (domain-name (string-ascii 64)))
+  (map-get? domain-registry domain-name))
+
+(define-read-only (get-lease-info (domain-name (string-ascii 64)))
+  (map-get? active-leases domain-name))
+
+(define-read-only (get-user-profile (user principal))
+  (map-get? user-profiles user))
+
+(define-read-only (get-earnings (owner principal))
+  (default-to u0 (map-get? lease-earnings owner)))
+
+(define-read-only (get-lease-history (domain-name (string-ascii 64)) (lease-id uint))
+  (map-get? lease-history { domain: domain-name, lease-id: lease-id }))
+
+(define-read-only (is-domain-available (domain-name (string-ascii 64)))
+  (let ((domain (map-get? domain-registry domain-name))
+        (lease (map-get? active-leases domain-name)))
+    (match domain
+      domain-data
+      (and 
+        (get available-for-lease domain-data)
+        (is-none lease))
+      false)))
+
+(define-read-only (get-platform-stats (stat-name (string-ascii 20)))
+  (default-to u0 (map-get? platform-stats stat-name)))
+
+(define-read-only (is-favorite (user principal) (domain-name (string-ascii 64)))
+  (default-to false (map-get? domain-favorites { user: user, domain: domain-name })))
+
+(define-read-only (calculate-lease-cost (domain-name (string-ascii 64)) (duration uint))
+  (match (map-get? domain-registry domain-name)
+    domain-data
+    (let ((total (* (get price-per-block domain-data) duration))
+          (fee (/ (* total platform-fee) u10000)))
+      (ok { total-cost: total, platform-fee: fee, owner-amount: (- total fee) }))
+    err-not-found))
+
+(define-read-only (get-domain-reputation (domain-name (string-ascii 64)))
+  (match (map-get? domain-registry domain-name)
+    domain-data (ok (get reputation-score domain-data))
+    err-not-found))
+
+(define-read-only (time-until-lease-expires (domain-name (string-ascii 64)))
+  (match (map-get? active-leases domain-name)
+    lease-data
+    (if (> (get end-block lease-data) block-height)
+      (ok (- (get end-block lease-data) block-height))
+      (ok u0))
+    err-not-found))
+
+;; Private helper function
+(define-private (update-user-profile-lease (lessee principal) (owner principal) (amount uint))
+  (let ((lessee-profile (default-to 
+          { domains-owned: u0, domains-leased: u0, total-earned: u0, total-spent: u0, reputation: u100, joined-at: block-height }
+          (map-get? user-profiles lessee)))
+        (owner-profile (default-to 
+          { domains-owned: u0, domains-leased: u0, total-earned: u0, total-spent: u0, reputation: u100, joined-at: block-height }
+          (map-get? user-profiles owner))))
+    
+    (map-set user-profiles lessee (merge lessee-profile { 
+      domains-leased: (+ (get domains-leased lessee-profile) u1),
+      total-spent: (+ (get total-spent lessee-profile) amount)
+    }))
+    
+    (map-set user-profiles owner (merge owner-profile { 
+      total-earned: (+ (get total-earned owner-profile) amount)
+    }))
+    
+    true))
