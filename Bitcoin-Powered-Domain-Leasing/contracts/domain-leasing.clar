@@ -81,3 +81,83 @@
 (define-map domain-favorites
   { user: principal, domain: (string-ascii 64) }
   bool)
+
+(define-public (register-domain 
+  (domain-name (string-ascii 64))
+  (price-per-block uint)
+  (min-duration uint)
+  (max-duration uint)
+  (tags (list 5 (string-ascii 20))))
+  (let ((caller tx-sender)
+        (domain-len (len domain-name)))
+    (asserts! (and (>= domain-len min-domain-length) (<= domain-len max-domain-length)) err-invalid-domain)
+    (asserts! (is-none (map-get? domain-registry domain-name)) err-domain-exists)
+    (asserts! (and (>= min-duration min-lease-duration) (<= max-duration max-lease-duration)) err-invalid-duration)
+    (asserts! (> price-per-block u0) err-insufficient-payment)
+    
+    ;; Register domain
+    (map-set domain-registry domain-name {
+      owner: caller,
+      available-for-lease: true,
+      price-per-block: price-per-block,
+      min-lease-duration: min-duration,
+      max-lease-duration: max-duration,
+      created-at: block-height,
+      total-leases: u0,
+      reputation-score: u100,
+      tags: tags
+    })
+    
+    ;; Update user profile
+    (let ((profile (default-to 
+      { domains-owned: u0, domains-leased: u0, total-earned: u0, total-spent: u0, reputation: u100, joined-at: block-height }
+      (map-get? user-profiles caller))))
+      (map-set user-profiles caller (merge profile { domains-owned: (+ (get domains-owned profile) u1) })))
+    
+    ;; Update platform stats
+    (map-set platform-stats "total-domains" 
+      (+ u1 (default-to u0 (map-get? platform-stats "total-domains"))))
+    
+    (ok true)))
+
+(define-public (update-domain-settings
+  (domain-name (string-ascii 64))
+  (new-price uint)
+  (available bool)
+  (new-tags (list 5 (string-ascii 20))))
+  (let ((caller tx-sender)
+        (domain (unwrap! (map-get? domain-registry domain-name) err-not-found)))
+    (asserts! (is-eq caller (get owner domain)) err-unauthorized)
+    (asserts! (> new-price u0) err-insufficient-payment)
+    
+    (map-set domain-registry domain-name (merge domain {
+      price-per-block: new-price,
+      available-for-lease: available,
+      tags: new-tags
+    }))
+    (ok true)))
+
+(define-public (transfer-domain-ownership
+  (domain-name (string-ascii 64))
+  (new-owner principal))
+  (let ((caller tx-sender)
+        (domain (unwrap! (map-get? domain-registry domain-name) err-not-found)))
+    (asserts! (is-eq caller (get owner domain)) err-unauthorized)
+    (asserts! (is-none (map-get? active-leases domain-name)) err-domain-unavailable)
+    
+    ;; Update old owner profile
+    (let ((old-profile (default-to 
+      { domains-owned: u0, domains-leased: u0, total-earned: u0, total-spent: u0, reputation: u100, joined-at: block-height }
+      (map-get? user-profiles caller))))
+      (map-set user-profiles caller (merge old-profile { 
+        domains-owned: (if (> (get domains-owned old-profile) u0) (- (get domains-owned old-profile) u1) u0) 
+      })))
+    
+    ;; Update new owner profile
+    (let ((new-profile (default-to 
+      { domains-owned: u0, domains-leased: u0, total-earned: u0, total-spent: u0, reputation: u100, joined-at: block-height }
+      (map-get? user-profiles new-owner))))
+      (map-set user-profiles new-owner (merge new-profile { domains-owned: (+ (get domains-owned new-profile) u1) })))
+    
+    (map-set domain-registry domain-name (merge domain { owner: new-owner }))
+    (ok true)))
