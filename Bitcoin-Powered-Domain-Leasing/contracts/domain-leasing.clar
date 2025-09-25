@@ -161,3 +161,128 @@
     
     (map-set domain-registry domain-name (merge domain { owner: new-owner }))
     (ok true)))
+
+(define-public (lease-domain 
+  (domain-name (string-ascii 64))
+  (lease-duration uint)
+  (auto-renew bool))
+  (let ((caller tx-sender)
+        (domain (unwrap! (map-get? domain-registry domain-name) err-not-found)))
+    (asserts! (get available-for-lease domain) err-domain-unavailable)
+    (asserts! (and (>= lease-duration (get min-lease-duration domain)) 
+                   (<= lease-duration (get max-lease-duration domain))) err-invalid-duration)
+    (asserts! (is-none (map-get? active-leases domain-name)) err-domain-unavailable)
+    
+    (let ((total-cost (* (get price-per-block domain) lease-duration))
+          (platform-fee-amount (/ (* total-cost platform-fee) u10000))
+          (owner-amount (- total-cost platform-fee-amount))
+          (domain-owner (get owner domain)))
+      (asserts! (>= (stx-get-balance caller) total-cost) err-insufficient-payment)
+      
+      ;; Transfer payments
+      (try! (stx-transfer? owner-amount caller domain-owner))
+      (try! (stx-transfer? platform-fee-amount caller contract-owner))
+      
+      ;; Create lease record
+      (map-set active-leases domain-name {
+        lessee: caller,
+        owner: domain-owner,
+        start-block: block-height,
+        end-block: (+ block-height lease-duration),
+        total-paid: total-cost,
+        price-per-block: (get price-per-block domain),
+        auto-renew: auto-renew,
+        lease-count: (+ (get total-leases domain) u1)
+      })
+      
+      ;; Update domain stats
+      (map-set domain-registry domain-name (merge domain {
+        total-leases: (+ (get total-leases domain) u1)
+      }))
+      
+      ;; Update earnings and profiles
+      (let ((current-earnings (default-to u0 (map-get? lease-earnings domain-owner))))
+        (map-set lease-earnings domain-owner (+ current-earnings owner-amount)))
+      
+      (update-user-profile-lease caller domain-owner total-cost)
+      
+      ;; Update platform stats
+      (map-set platform-stats "total-leases" 
+        (+ u1 (default-to u0 (map-get? platform-stats "total-leases"))))
+      
+      (ok true))))
+
+(define-public (extend-lease 
+  (domain-name (string-ascii 64))
+  (additional-duration uint))
+  (let ((caller tx-sender)
+        (lease (unwrap! (map-get? active-leases domain-name) err-not-found))
+        (domain (unwrap! (map-get? domain-registry domain-name) err-not-found)))
+    (asserts! (is-eq caller (get lessee lease)) err-unauthorized)
+    (asserts! (> (get end-block lease) block-height) err-lease-expired)
+    (asserts! (<= (+ additional-duration (- (get end-block lease) block-height)) 
+                  (get max-lease-duration domain)) err-invalid-duration)
+    
+    (let ((extension-cost (* (get price-per-block lease) additional-duration))
+          (platform-fee-amount (/ (* extension-cost platform-fee) u10000))
+          (owner-amount (- extension-cost platform-fee-amount))
+          (lease-owner (get owner lease)))
+      (asserts! (>= (stx-get-balance caller) extension-cost) err-insufficient-payment)
+      
+      ;; Transfer payments
+      (try! (stx-transfer? owner-amount caller lease-owner))
+      (try! (stx-transfer? platform-fee-amount caller contract-owner))
+      
+      ;; Update lease
+      (map-set active-leases domain-name
+        (merge lease {
+          end-block: (+ (get end-block lease) additional-duration),
+          total-paid: (+ (get total-paid lease) extension-cost)
+        }))
+      
+      ;; Update earnings
+      (let ((current-earnings (default-to u0 (map-get? lease-earnings lease-owner))))
+        (map-set lease-earnings lease-owner (+ current-earnings owner-amount)))
+      
+      (ok true))))
+
+(define-public (terminate-lease-early (domain-name (string-ascii 64)))
+  (let ((caller tx-sender)
+        (lease (unwrap! (map-get? active-leases domain-name) err-not-found)))
+    (asserts! (is-eq caller (get lessee lease)) err-unauthorized)
+    (asserts! (> (get end-block lease) block-height) err-lease-expired)
+    
+    ;; Record in history before deletion
+    (map-set lease-history { domain: domain-name, lease-id: (get lease-count lease) } {
+      lessee: (get lessee lease),
+      owner: (get owner lease),
+      start-block: (get start-block lease),
+      end-block: block-height,
+      amount-paid: (get total-paid lease),
+      completed: false
+    })
+    
+    (map-delete active-leases domain-name)
+    (ok true)))
+
+(define-public (reclaim-domain (domain-name (string-ascii 64)))
+  (let ((caller tx-sender)
+        (lease (map-get? active-leases domain-name)))
+    (match lease
+      lease-data 
+      (begin
+        (asserts! (<= (get end-block lease-data) block-height) err-unauthorized)
+        
+        ;; Record completed lease in history
+        (map-set lease-history { domain: domain-name, lease-id: (get lease-count lease-data) } {
+          lessee: (get lessee lease-data),
+          owner: (get owner lease-data),
+          start-block: (get start-block lease-data),
+          end-block: (get end-block lease-data),
+          amount-paid: (get total-paid lease-data),
+          completed: true
+        })
+        
+        (map-delete active-leases domain-name)
+        (ok true))
+      (ok false))))
