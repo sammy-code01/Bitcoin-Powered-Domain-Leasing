@@ -102,7 +102,7 @@
       price-per-block: price-per-block,
       min-lease-duration: min-duration,
       max-lease-duration: max-duration,
-      created-at: block-height,
+      created-at: stacks-block-height,
       total-leases: u0,
       reputation-score: u100,
       tags: tags
@@ -110,7 +110,7 @@
     
     ;; Update user profile
     (let ((profile (default-to 
-      { domains-owned: u0, domains-leased: u0, total-earned: u0, total-spent: u0, reputation: u100, joined-at: block-height }
+      { domains-owned: u0, domains-leased: u0, total-earned: u0, total-spent: u0, reputation: u100, joined-at: stacks-block-height }
       (map-get? user-profiles caller))))
       (map-set user-profiles caller (merge profile { domains-owned: (+ (get domains-owned profile) u1) })))
     
@@ -147,7 +147,7 @@
     
     ;; Update old owner profile
     (let ((old-profile (default-to 
-      { domains-owned: u0, domains-leased: u0, total-earned: u0, total-spent: u0, reputation: u100, joined-at: block-height }
+      { domains-owned: u0, domains-leased: u0, total-earned: u0, total-spent: u0, reputation: u100, joined-at: stacks-block-height }
       (map-get? user-profiles caller))))
       (map-set user-profiles caller (merge old-profile { 
         domains-owned: (if (> (get domains-owned old-profile) u0) (- (get domains-owned old-profile) u1) u0) 
@@ -155,7 +155,7 @@
     
     ;; Update new owner profile
     (let ((new-profile (default-to 
-      { domains-owned: u0, domains-leased: u0, total-earned: u0, total-spent: u0, reputation: u100, joined-at: block-height }
+      { domains-owned: u0, domains-leased: u0, total-earned: u0, total-spent: u0, reputation: u100, joined-at: stacks-block-height }
       (map-get? user-profiles new-owner))))
       (map-set user-profiles new-owner (merge new-profile { domains-owned: (+ (get domains-owned new-profile) u1) })))
     
@@ -187,8 +187,8 @@
       (map-set active-leases domain-name {
         lessee: caller,
         owner: domain-owner,
-        start-block: block-height,
-        end-block: (+ block-height lease-duration),
+        start-block: stacks-block-height,
+        end-block: (+ stacks-block-height lease-duration),
         total-paid: total-cost,
         price-per-block: (get price-per-block domain),
         auto-renew: auto-renew,
@@ -219,8 +219,8 @@
         (lease (unwrap! (map-get? active-leases domain-name) err-not-found))
         (domain (unwrap! (map-get? domain-registry domain-name) err-not-found)))
     (asserts! (is-eq caller (get lessee lease)) err-unauthorized)
-    (asserts! (> (get end-block lease) block-height) err-lease-expired)
-    (asserts! (<= (+ additional-duration (- (get end-block lease) block-height)) 
+    (asserts! (> (get end-block lease) stacks-block-height) err-lease-expired)
+    (asserts! (<= (+ additional-duration (- (get end-block lease) stacks-block-height)) 
                   (get max-lease-duration domain)) err-invalid-duration)
     
     (let ((extension-cost (* (get price-per-block lease) additional-duration))
@@ -250,14 +250,14 @@
   (let ((caller tx-sender)
         (lease (unwrap! (map-get? active-leases domain-name) err-not-found)))
     (asserts! (is-eq caller (get lessee lease)) err-unauthorized)
-    (asserts! (> (get end-block lease) block-height) err-lease-expired)
+    (asserts! (> (get end-block lease) stacks-block-height) err-lease-expired)
     
     ;; Record in history before deletion
     (map-set lease-history { domain: domain-name, lease-id: (get lease-count lease) } {
       lessee: (get lessee lease),
       owner: (get owner lease),
       start-block: (get start-block lease),
-      end-block: block-height,
+      end-block: stacks-block-height,
       amount-paid: (get total-paid lease),
       completed: false
     })
@@ -271,7 +271,7 @@
     (match lease
       lease-data 
       (begin
-        (asserts! (<= (get end-block lease-data) block-height) err-unauthorized)
+        (asserts! (<= (get end-block lease-data) stacks-block-height) err-unauthorized)
         
         ;; Record completed lease in history
         (map-set lease-history { domain: domain-name, lease-id: (get lease-count lease-data) } {
@@ -345,18 +345,18 @@
 (define-read-only (time-until-lease-expires (domain-name (string-ascii 64)))
   (match (map-get? active-leases domain-name)
     lease-data
-    (if (> (get end-block lease-data) block-height)
-      (ok (- (get end-block lease-data) block-height))
+    (if (> (get end-block lease-data) stacks-block-height)
+      (ok (- (get end-block lease-data) stacks-block-height))
       (ok u0))
     err-not-found))
 
 ;; Private helper function
 (define-private (update-user-profile-lease (lessee principal) (owner principal) (amount uint))
   (let ((lessee-profile (default-to 
-          { domains-owned: u0, domains-leased: u0, total-earned: u0, total-spent: u0, reputation: u100, joined-at: block-height }
+          { domains-owned: u0, domains-leased: u0, total-earned: u0, total-spent: u0, reputation: u100, joined-at: stacks-block-height }
           (map-get? user-profiles lessee)))
         (owner-profile (default-to 
-          { domains-owned: u0, domains-leased: u0, total-earned: u0, total-spent: u0, reputation: u100, joined-at: block-height }
+          { domains-owned: u0, domains-leased: u0, total-earned: u0, total-spent: u0, reputation: u100, joined-at: stacks-block-height }
           (map-get? user-profiles owner))))
     
     (map-set user-profiles lessee (merge lessee-profile { 
